@@ -2,12 +2,15 @@ const express = require("express");
 const app = express();
 const bodyParser = require("body-parser");
 const webrtc = require("wrtc");
-const { createImageData, createCanvas } = require("canvas");
+const { createImageData, createCanvas, loadImage } = require("canvas");
 const { RTCVideoSource, RTCVideoSink, i420ToRgba, rgbaToI420 } =
   require("wrtc").nonstandard;
+
+require("@tensorflow/tfjs-backend-cpu");
+require("@tensorflow/tfjs-backend-webgl");
+
 const tf = require("@tensorflow/tfjs");
-const bodyPix = require("@tensorflow-models/body-pix");
-const blazeface = require("@tensorflow-models/blazeface");
+const cocoSsd = require("@tensorflow-models/coco-ssd");
 
 let net;
 
@@ -15,13 +18,16 @@ async function loadBodyPix() {
   await tf.ready();
   const backend = tf.getBackend();
   console.log("Using TensorFlow backend: ", backend);
-  //net = await cocoSsd.load();
-  net = await blazeface.load();
+
+  //net = await bodyPix.load();
+  // net = await blazeface.load();
+  net = await cocoSsd.load({
+    base: "lite_mobilenet_v2",
+  });
 }
 
 loadBodyPix();
 
-let senderStream;
 let lastFrame = null;
 
 let loading = false;
@@ -98,84 +104,68 @@ function handleTrackEvent(e, peer) {
 
 function onFrame({ frame }) {
   lastFrame = frame;
+  source.onFrame(lastFrame);
 }
 
-let lastPath;
-
-setInterval(() => segment());
+setInterval(() => {
+  segment();
+});
 
 async function segment() {
-  const date = new Date().getTime();
   if (lastFrame && !loading) {
     loading = true;
     i420ToRgba(lastFrame, rgbaFrame);
     lastFrameContext.putImageData(rgbaFrame, 0, 0);
     try {
       const pixels = tf.browser.fromPixels(lastFrameCanvas);
-      const returnTensors = false; // Pass in `true` to get tensors back, rather than values.
-
-      const predictions = await net.estimateFaces(pixels, returnTensors);
-
-      if (predictions.length > 0) {
-        for (let i = 0; i < predictions.length; i++) {
-          const start = predictions[i].topLeft;
-          const end = predictions[i].bottomRight;
-          const landmarks = predictions[i].landmarks;
-          const size = [end[0] - start[0], end[1] - start[1]];
-
-          // Render a rectangle over each detected face.
-          lastPath = { start, size };
-          lastFrameContext.beginPath();
-          lastFrameContext.strokeStyle = "red";
-          lastFrameContext.rect(start[0], start[1], size[0], size[1]);
-
-          // EYES
-          lastFrameContext.fillRect(landmarks[0][0], landmarks[0][1], 2, 2);
-          lastFrameContext.fillRect(landmarks[1][0], landmarks[1][1], 2, 2);
-
-          lastFrameContext.fillRect(landmarks[2][0], landmarks[2][1], 2, 2);
-          lastFrameContext.fillRect(landmarks[3][0], landmarks[3][1], 2, 2);
-
-          lastFrameContext.fillRect(landmarks[4][0], landmarks[4][1], 2, 2);
-          lastFrameContext.fillRect(landmarks[5][0], landmarks[5][1], 2, 2);
-
-          lastFrameContext.stroke();
-        }
-        const imageData = lastFrameContext.getImageData(0, 0, width, height);
-        const i420Frame = {
-          width: width,
-          height: height,
-          data: new Uint8ClampedArray(width * height * 1.5),
-        };
-        rgbaToI420(imageData, i420Frame);
-        source.onFrame(i420Frame);
-        loading = false;
-      } else {
-        source.onFrame(lastFrame);
-        loading = false;
-      }
+      net.detect(pixels, 1, 0.7).then((as) => {
+        console.log(as);
+      });
     } catch (error) {
-      console.log("ERROR!");
       console.log(error);
+      loading = false;
     }
   } else if (lastFrame) {
     console.log("busy");
-    i420ToRgba(lastFrame, rgbaFrame);
-    if (lastPath) {
-      lastFrameContext.putImageData(rgbaFrame, 0, 0);
-      lastFrameContext.beginPath();
-      lastFrameContext.strokeStyle = "red";
-      lastFrameContext.rect(
-        lastPath.start[0],
-        lastPath.start[1],
-        lastPath.size[0],
-        lastPath.size[1]
-      );
-    }
-    lastFrameContext.stroke();
+
     source.onFrame(lastFrame);
     loading = false;
   }
 }
+
+// async function detect() {
+//   if (lastFrame && !loading) {
+//     loading = true;
+//     try {
+//       const newCanvas = createCanvas(80, 60);
+//       const newContext = newCanvas.getContext("2d");
+
+//       const rgba = new Uint8ClampedArray(width * height * 4);
+
+//       const frame = lastFrameContext.getImageData(
+//         0,
+//         0,
+//         newCanvas.width,
+//         newCanvas.height
+//       );
+//       newContext.putImageData(frame, 0, 0);
+
+//       const pixels = tf.browser.fromPixels(newCanvas);
+
+//       console.log(pixels);
+
+//       const predictions = await net.detect(pixels);
+
+//       if (predictions.length > 0) {
+//         lastPrediction = predictions;
+//         console.log(lastPrediction);
+//       }
+
+//       loading = false;
+//     } catch (error) {
+//       console.log(error);
+//     }
+//   }
+// }
 
 app.listen(5000, () => console.log("server started"));
